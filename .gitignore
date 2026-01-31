@@ -7,3 +7,4 @@ app/data/*
 *.pth
 *.npy
 *.txt
+*.pth
