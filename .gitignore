@@ -1,0 +1,9 @@
+pycache/*
+__pycache__/*
+data/*
+app/data/*
+*.pyc
+*.npz
+*.pth
+*.npy
+*.txt
