@@ -72,7 +72,7 @@ class Interpreter(nn.Module):
         
         # Generate outputs
         scout_orders_flat = self.to_scouts(output)
-        scout_orders = scout_orders_flat.view(batch_size, self.num_scouts, self.vector_size)
+        scout_orders = scout_orders_flat.view(batch_size, self.num_scouts, self.scout_order_size)
         
         to_thalamus = self.to_thalamus(output)
         active_logits = self.scout_active_logits(output)

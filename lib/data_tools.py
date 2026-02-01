@@ -272,6 +272,46 @@ def generate_ollama_data(output_path, model="tinyllama", count=10):
         print(f"Generation failed: {e}")
         return False
 
+def heuristic_quality_check(text):
+    """
+    Fallback quality check if AI model fails.
+    Returns: really_bad, bad, ok, good, really_good
+    """
+    text = text.strip()
+    length = len(text)
+    
+    # 1. Too short = really_bad
+    if length < 100:
+        return "really_bad"
+        
+    # 2. Check for code-like structure (indentation, common keywords)
+    code_keywords = ["def ", "class ", "import ", "function", "return ", "{", "}", "if (", "for ("]
+    code_score = sum(1 for k in code_keywords if k in text)
+    
+    # 3. Check for natural language structure (sentences)
+    # Count periods followed by spaces
+    sentences = text.count(". ") + text.count("? ") + text.count("! ")
+    avg_sentence_len = length / max(1, sentences)
+    
+    # Decisions
+    if code_score > 3:
+        if length > 1000: return "really_good"
+        return "good"
+        
+    if length > 2000 and sentences > 10:
+        return "really_good"
+        
+    if length > 1000 and sentences > 5:
+        return "good"
+        
+    if length > 300 and sentences > 2:
+        return "ok"
+        
+    if avg_sentence_len > 300: # Huge wall of text without punctuation
+        return "bad"
+        
+    return "ok" # Default fallback
+
 def classify_and_sort(data_dir, model="llama3"):
     """
     Classifies text files in data_dir into quality buckets using Ollama.
@@ -344,10 +384,22 @@ def classify_and_sort(data_dir, model="llama3"):
                         if "code" in output or "excellent" in output: rating = "really_good"
                         elif "garbage" in output: rating = "really_bad"
             
+            except urllib.error.HTTPError as e:
+                # Read the error body to understand the root cause
+                error_body = e.read().decode('utf-8')
+                print(f"Ollama HTTP {e.code} Error for {fname}: {error_body}")
+                
+                # If 500 and "model not found" or similar, we might need to pull or switch
+                if e.code == 500 and "not found" in error_body.lower():
+                     print(f"Model {model} appears broken or missing. Falling back to heuristic.")
+                
+                print("Falling back to heuristic...")
+                rating = heuristic_quality_check(content)
+                
             except Exception as e:
                 print(f"Ollama classification failed for {fname}: {e}")
-                # Don't move if failed, or move to 'ok'? Let's keep in root.
-                continue
+                print("Falling back to heuristic...")
+                rating = heuristic_quality_check(content)
         
         # Move file
         target_path = os.path.join(data_dir, rating, fname)

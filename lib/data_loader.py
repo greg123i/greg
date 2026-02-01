@@ -19,10 +19,15 @@ class FileAnalyzer:
         Generates 8D vectors for all .txt files based on char frequency.
         """
         print("Vectorizing files...")
-        files = [f for f in os.listdir(self.data_directory) if f.endswith(".txt")]
+        files = []
+        for root, dirs, f_names in os.walk(self.data_directory):
+            if 'really_bad' in dirs:
+                dirs.remove('really_bad')
+            for f in f_names:
+                if f.endswith(".txt"):
+                    files.append(os.path.join(root, f))
         
-        for fname in files:
-            fpath = os.path.join(self.data_directory, fname)
+        for fpath in files:
             try:
                 with open(fpath, 'rb') as f:
                     content = f.read()
@@ -36,7 +41,7 @@ class FileAnalyzer:
                     
                     self.file_vectors[fpath] = np.array(vector)
             except Exception as e:
-                print(f"Error vectorizing {fname}: {e}")
+                print(f"Error vectorizing {fpath}: {e}")
         
         print(f"Vectorized {len(self.file_vectors)} files.")
 
@@ -120,27 +125,32 @@ def load_text_data(samples=1000, sequence_length=10, target_length=1, data_direc
     
     all_byte_content = bytearray()
     
-    # Read all text files
+    # Read all text files recursively
     if os.path.exists(data_directory):
-        for filename in os.listdir(data_directory):
-            if filename.endswith(".txt"):
-                try:
-                    file_path = os.path.join(data_directory, filename)
-                    # Read as binary to get raw bytes (0-255)
-                    with open(file_path, 'rb') as file_handle:
-                        content_bytes = file_handle.read()
-                        
-                        # Filter out unwanted tokens (in bytes)
-                        # <|endoftext|> is b'<|endoftext|>'
-                        content_bytes = content_bytes.replace(b"<|endoftext|>", b"")
-                        content_bytes = content_bytes.replace(b"<|endoftext", b"")
-                        
-                        # Add to collection (space separator is byte 32)
-                        all_byte_content.extend(content_bytes)
-                        all_byte_content.append(32) 
-                        
-                except Exception as error:
-                    print(f"Error reading {filename}: {error}")
+        for root, dirs, files in os.walk(data_directory):
+            # Skip 'really_bad' folder
+            if 'really_bad' in dirs:
+                dirs.remove('really_bad')
+                
+            for filename in files:
+                if filename.endswith(".txt"):
+                    try:
+                        file_path = os.path.join(root, filename)
+                        # Read as binary to get raw bytes (0-255)
+                        with open(file_path, 'rb') as file_handle:
+                            content_bytes = file_handle.read()
+                            
+                            # Filter out unwanted tokens (in bytes)
+                            # <|endoftext|> is b'<|endoftext|>'
+                            content_bytes = content_bytes.replace(b"<|endoftext|>", b"")
+                            content_bytes = content_bytes.replace(b"<|endoftext", b"")
+                            
+                            # Add to collection (space separator is byte 32)
+                            all_byte_content.extend(content_bytes)
+                            all_byte_content.append(32) 
+                            
+                    except Exception as error:
+                        print(f"Error reading {filename}: {error}")
     
     if len(all_byte_content) < sequence_length + target_length:
         print("Not enough scraped data. Using fallback patterns.")
@@ -180,24 +190,28 @@ def load_raw_byte_data(data_directory=None):
     
     all_byte_content = bytearray()
     
-    # Read all text files
+    # Read all text files recursively
     if os.path.exists(data_directory):
-        for filename in os.listdir(data_directory):
-            if filename.endswith(".txt"):
-                try:
-                    file_path = os.path.join(data_directory, filename)
-                    with open(file_path, 'rb') as file_handle:
-                        content_bytes = file_handle.read()
-                        
-                        # Filter out unwanted tokens (in bytes)
-                        content_bytes = content_bytes.replace(b"<|endoftext|>", b"")
-                        content_bytes = content_bytes.replace(b"<|endoftext", b"")
-                        
-                        all_byte_content.extend(content_bytes)
-                        all_byte_content.append(32) # Space separator
-                        
-                except Exception as error:
-                    print(f"Error reading {filename}: {error}")
+        for root, dirs, files in os.walk(data_directory):
+            if 'really_bad' in dirs:
+                dirs.remove('really_bad')
+                
+            for filename in files:
+                if filename.endswith(".txt"):
+                    try:
+                        file_path = os.path.join(root, filename)
+                        with open(file_path, 'rb') as file_handle:
+                            content_bytes = file_handle.read()
+                            
+                            # Filter out unwanted tokens (in bytes)
+                            content_bytes = content_bytes.replace(b"<|endoftext|>", b"")
+                            content_bytes = content_bytes.replace(b"<|endoftext", b"")
+                            
+                            all_byte_content.extend(content_bytes)
+                            all_byte_content.append(32) # Space separator
+                            
+                    except Exception as error:
+                        print(f"Error reading {filename}: {error}")
     
     return list(all_byte_content)
 
@@ -212,24 +226,28 @@ def load_raw_text_data(data_directory=None):
     
     all_text_content = ""
     
-    # Read all text files
+    # Read all text files recursively
     if os.path.exists(data_directory):
-        for filename in os.listdir(data_directory):
-            if filename.endswith(".txt"):
-                try:
-                    file_path = os.path.join(data_directory, filename)
-                    with open(file_path, 'r', encoding='utf-8') as file_handle:
-                        content = file_handle.read()
-                        
-                        # Filter out unwanted tokens
-                        content = content.replace("<|endoftext|>", "")
-                        content = content.replace("<|endoftext", "")
-                        
-                        content_parts = content.split()
-                        cleaned_content = " ".join(content_parts)
-                        all_text_content += cleaned_content + " "
-                except Exception as error:
-                    print(f"Error reading {filename}: {error}")
+        for root, dirs, files in os.walk(data_directory):
+            if 'really_bad' in dirs:
+                dirs.remove('really_bad')
+
+            for filename in files:
+                if filename.endswith(".txt"):
+                    try:
+                        file_path = os.path.join(root, filename)
+                        with open(file_path, 'r', encoding='utf-8') as file_handle:
+                            content = file_handle.read()
+                            
+                            # Filter out unwanted tokens
+                            content = content.replace("<|endoftext|>", "")
+                            content = content.replace("<|endoftext", "")
+                            
+                            content_parts = content.split()
+                            cleaned_content = " ".join(content_parts)
+                            all_text_content += cleaned_content + " "
+                    except Exception as error:
+                        print(f"Error reading {filename}: {error}")
     
     if not all_text_content:
         # Fallback

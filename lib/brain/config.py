@@ -10,14 +10,14 @@ class BrainConfig:
     VECTOR_SIZE = 128 # Standard size for inter-module communication
     
     # Scout Specifics
-    SCOUT_IDEA_SIZE = 20   # Output from Scout (Encoder)
+    SCOUT_IDEA_SIZE = 64   # Output from Scout (Encoder) - Increased from 20 for better bandwidth
     SCOUT_ORDER_SIZE = 12  # Input to Scout (from Interpreter)
     
     # Reader / Scouts
     SCOUT_COUNT = 3
     SCOUT_WINDOW_SIZE = 49
-    SCOUT_HIDDEN_SIZE = 256
-    INTERPRETER_HIDDEN_SIZE = 256
+    SCOUT_HIDDEN_SIZE = 512 # Increased from 256 to relax bottleneck
+    INTERPRETER_HIDDEN_SIZE = 512 # Matched to Scout Hidden
     
     # Thinker
     THINKER_COUNT = 1
@@ -35,5 +35,5 @@ class BrainConfig:
     THALAMUS_HIDDEN_SIZE = 512
     
     # Optimization
-    LEARNING_RATE = 1e-4
+    LEARNING_RATE = 1e-3 # Increased for faster initial learning
     WEIGHT_DECAY = 1e-5

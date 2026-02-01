@@ -1,0 +1,4 @@
+2026-02-01 12:27:00,985 - DEBUG - predict_greg called with prompt: 'User: hi|AI:'
+2026-02-01 12:27:00,995 - DEBUG - Padded prompt bytes len: 49
+2026-02-01 12:27:01,011 - DEBUG - Starting generation loop. Target len: 130, Max steps: 390
+2026-02-01 12:27:07,076 - DEBUG - Generated raw text: 'B¢\x8bÂÂRã/  3ã]     iããRÂgÂ3ggÂxÂÂ 3 R3Â x]ä«\x84­Âg9gggä\x8b/gk³9Ä33RR ' (len: 64)

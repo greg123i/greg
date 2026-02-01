@@ -251,12 +251,27 @@ def run_gui():
             return
         add_chat_line("User: " + text)
         input_box.set_text("")
+        status_text = "Greg is thinking..."
+        
+        # Force a redraw so user sees "Thinking..." immediately (hacky but works in single thread)
+        # Actually, we can't easily force redraw without breaking the loop. 
+        # But since generate is blocking, the UI will freeze. 
+        # We really should run generation in a thread, but for now let's just update status.
+        
         try:
+            pygame.display.set_caption("Greg AI (Thinking...)")
+            pygame.event.pump() # Prevent "Not Responding"
+            
             response = model.generate_chat_response(chat_history, text)
+            if not response:
+                response = "[...]" # Visual indicator for empty response
+            
             add_chat_line("AI: " + response)
             status_text = model.status_message
         except Exception as error:
             status_text = "Error: " + str(error)
+        finally:
+             pygame.display.set_caption(f"Greg AI Model GUI ({model.device})")
 
     def on_train():
         nonlocal status_text
@@ -308,10 +323,13 @@ def run_gui():
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write(log_content)
                 
-            # 2. Try to copy to clipboard (Windows)
-            os.system(f"type {log_path} | clip")
-            
-            status_text = f"Log dumped to {fname} & Clipboard!"
+            # 2. Leave a message (Save to fixed 'latest_message.txt')
+            # This allows the user to easily find the last log without searching through timestamps.
+            message_path = os.path.join(PROJECT_ROOT, "latest_message.txt")
+            with open(message_path, "w", encoding="utf-8") as f:
+                f.write(log_content)
+
+            status_text = f"Log saved to {fname} & latest_message.txt"
         except Exception as e:
             status_text = f"Dump failed: {e}"
 
@@ -491,6 +509,12 @@ def run_gui():
                 
                 if len(points) > 1:
                     pygame.draw.lines(screen, GREEN, False, points, 2)
+
+            # Update Window Title based on state
+        if model.is_training:
+            pygame.display.set_caption(f"Greg AI - TRAINING (Epoch {model.diag.get('epoch', '?')})")
+        else:
+            pygame.display.set_caption("Greg AI - Idle")
 
         # Draw Status Bar (Always on top of everything at bottom)
         draw_status_line(screen, small_font, model.status_message or status_text, status_rect)

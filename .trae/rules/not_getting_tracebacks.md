@@ -3,7 +3,7 @@ title: not getting tracebacks
 alwaysapply: true
 ---
 
- - before you generate any piece of code, think what it should do, if you think it will cause a problem, try ssomething else
+ - before you generate any piece of code, think what it should do, if you think it will cause a problem, try something else
 
  - no manager-itis and god objects: i dont want to see a NounActivityer() class that does everything, everywhere, all at once, keep the class or function names descriptive, else, you will turn the classes and/or functions into a mess that noone can understand
 
@@ -14,3 +14,5 @@ alwaysapply: true
  - organize stuff via folders: if you dont, it turns into an unorganized mess
 
  - refactor things: if its too long or too slow, refactor it
+
+ - if you cant fix code using this, refer to the guso.md file

@@ -19,6 +19,7 @@ from lib.data_loader import load_raw_text_data, load_text_data
 from lib.data_tools import download_tinystories_subset, generate_ollama_data, crawl_and_scrape, classify_and_sort
 
 from lib.data_loader import load_raw_byte_data, FileAnalyzer
+from lib.debug_utils import log_debug, log_error
 
 class ModelInterface:
     def load_checkpoint(self):
@@ -270,9 +271,19 @@ class ModelInterface:
                 if not os.path.exists(self.data_directory) or not os.listdir(self.data_directory):
                      print("No data found. Generating sample data...")
                      os.makedirs(self.data_directory, exist_ok=True)
-                     sample_path = os.path.join(self.data_directory, "sample_data.txt")
+                     sample_path = os.path.join(self.data_directory, "sample_conversation.txt")
                      with open(sample_path, "w", encoding="utf-8") as f:
-                         f.write("Greg is a powerful AI that learns to predict text. " * 500)
+                         # Generate conversational sample data
+                         conversations = [
+                             "User: Hello|AI: Hi there! I am Greg.",
+                             "User: How are you?|AI: I am doing well, thank you.",
+                             "User: What is your name?|AI: My name is Greg.",
+                             "User: Write a story.|AI: Once upon a time, there was an AI.",
+                             "User: Help me.|AI: I can help you with your tasks."
+                         ]
+                         # Repeat to create enough volume
+                         for _ in range(200):
+                             f.write("\n".join(conversations) + "\n")
                 
                 # Vectorize and cluster (Metadata only, light on RAM)
                 self.analyzer.vectorize_files()
@@ -386,7 +397,10 @@ class ModelInterface:
                                 
                                 r_win = torch.stack(scout_windows_list, dim=1)
                                 window = all_windows[:, t_step]
-                                w_win = window.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
+                                
+                                # Fix: Slice for writer window size
+                                w_slice = window[:, -BrainConfig.CURSOR_WINDOW_SIZE:]
+                                w_win = w_slice.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
                                 
                                 actions, state = self.brain(r_win, w_win, state)
                                 logits = actions['cursor_chars'][:, 0, :]
@@ -465,7 +479,10 @@ class ModelInterface:
                                 
                                 r_win = torch.stack(scout_windows_list, dim=1)
                                 window = all_windows[:, t_step]
-                                w_win = window.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
+                                
+                                # Fix: Slice for writer window size
+                                w_slice = window[:, -BrainConfig.CURSOR_WINDOW_SIZE:]
+                                w_win = w_slice.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
                                 
                                 actions, state = self.brain(r_win, w_win, state)
                                 logits = actions['cursor_chars'][:, 0, :]
@@ -665,107 +682,185 @@ class ModelInterface:
         return "Load data first to see samples."
 
     def predict_greg(self, prompt_text, target_len=None):
-        # Inference with GregBrain
+        """
+        Robust prediction loop for GregBrain.
+        Handles cursor actions (Insert, Overwrite, Delete) with stall protection.
+        """
+        log_debug(f"predict_greg called with prompt: '{prompt_text}'")
         self.brain.eval()
         with torch.no_grad():
-            prompt_bytes = [ord(c) for c in prompt_text]
-            while len(prompt_bytes) < BrainConfig.SCOUT_WINDOW_SIZE:
-                prompt_bytes.insert(0, 32) # Space
+            # 1. Sanitize & Prepare Input
+            # Ensure all chars are 0-255. Replace others with '?' (63)
+            prompt_bytes = [ord(c) if ord(c) < 256 else 63 for c in prompt_text]
             
+            # Pad with spaces if shorter than window
+            while len(prompt_bytes) < BrainConfig.SCOUT_WINDOW_SIZE:
+                prompt_bytes.insert(0, 32)
+            
+            log_debug(f"Padded prompt bytes len: {len(prompt_bytes)}")
+
+            # 2. Initialize State
+            # We process the prompt to "warm up" the hidden state (teacher forcing)
             curr_seq = torch.tensor(prompt_bytes, dtype=torch.long, device=self.device).unsqueeze(0)
             state = self.brain.init_state(1, self.device)
             
-            generated_text = ""
-            # target_len between 50 and 1000
+            # Warmup: Run through the prompt
+            for t in range(BrainConfig.SCOUT_WINDOW_SIZE, curr_seq.shape[1]):
+                # Reader Window
+                r_slice = curr_seq[:, t - BrainConfig.SCOUT_WINDOW_SIZE : t]
+                r_win = r_slice.unsqueeze(1).expand(-1, BrainConfig.SCOUT_COUNT, -1)
+                
+                # Writer Window
+                w_slice = curr_seq[:, t - BrainConfig.CURSOR_WINDOW_SIZE : t]
+                w_win = w_slice.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
+                
+                _, state = self.brain(r_win, w_win, state)
+            
+            # 3. Generation Loop
+            pred_chars = list(prompt_bytes) # Working mutable list
+            original_len = len(pred_chars)  # Boundary of user prompt
+            
             if target_len is None:
-                target_len = random.randint(50, 1000)
+                target_len = random.randint(50, 200) # Shorter default for responsiveness
             
-            full_sequence = curr_seq 
+            max_steps = target_len * 3 # Allow some editing overhead
+            stall_counter = 0
             
-            # 1. Process Prompt
-            for t in range(BrainConfig.SCOUT_WINDOW_SIZE, full_sequence.shape[1]):
-                window = full_sequence[:, t - BrainConfig.SCOUT_WINDOW_SIZE : t]
-                r_win = window.unsqueeze(1).expand(-1, BrainConfig.SCOUT_COUNT, -1)
-                w_win = window.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
-                actions, state = self.brain(r_win, w_win, state)
-            
-            # 2. Generate
-            pred_chars = [c for c in prompt_bytes]
-            
-            for _ in range(target_len):
-                # Construct window from last chars (handled as list now for insert/delete support)
-                if len(pred_chars) < BrainConfig.SCOUT_WINDOW_SIZE:
-                    window_chars = [32] * (BrainConfig.SCOUT_WINDOW_SIZE - len(pred_chars)) + pred_chars
+            log_debug(f"Starting generation loop. Target len: {target_len}, Max steps: {max_steps}")
+
+            for step in range(max_steps):
+                # Check length limit
+                current_len = len(pred_chars)
+                generated_count = current_len - original_len
+                if generated_count >= target_len:
+                    log_debug("Target length reached.")
+                    break
+                
+                # Construct Reader Input Window (Last SCOUT_WINDOW_SIZE chars)
+                if current_len < BrainConfig.SCOUT_WINDOW_SIZE:
+                    # Pad left with spaces if we deleted too much
+                    window_chars = [32] * (BrainConfig.SCOUT_WINDOW_SIZE - current_len) + pred_chars
                 else:
                     window_chars = pred_chars[-BrainConfig.SCOUT_WINDOW_SIZE:]
                 
-                last_window = torch.tensor(window_chars, dtype=torch.long, device=self.device).unsqueeze(0)
+                r_window = torch.tensor(window_chars, dtype=torch.long, device=self.device).unsqueeze(0)
+                r_win = r_window.unsqueeze(1).expand(-1, BrainConfig.SCOUT_COUNT, -1)
                 
-                r_win = last_window.unsqueeze(1).expand(-1, BrainConfig.SCOUT_COUNT, -1)
-                w_win = last_window.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
+                # Construct Writer Input Window (Last CURSOR_WINDOW_SIZE chars)
+                if current_len < BrainConfig.CURSOR_WINDOW_SIZE:
+                    w_chars = [32] * (BrainConfig.CURSOR_WINDOW_SIZE - current_len) + pred_chars
+                else:
+                    w_chars = pred_chars[-BrainConfig.CURSOR_WINDOW_SIZE:]
+                    
+                w_window = torch.tensor(w_chars, dtype=torch.long, device=self.device).unsqueeze(0)
+                w_win = w_window.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
+                
+                # Forward Pass
                 actions, state = self.brain(r_win, w_win, state)
                 
-                # Cursor 0 Logic (Primary Writer)
-                # 1. Action Type
+                # --- ACTION LOGIC (Cursor 0) ---
+                
+                # 1. Action Type: 0=NoOp, 1=Insert, 2=Overwrite, 3=Delete
                 act_logits = actions['cursor_actions'][:, 0, :]
                 act_probs = torch.softmax(act_logits, dim=-1)
                 action = torch.multinomial(act_probs, 1).item()
                 
-                # 2. Offset
+                # 2. Offset (Where relative to window end)
                 off_logits = actions['cursor_offsets'][:, 0, :]
                 off_probs = torch.softmax(off_logits, dim=-1)
                 offset_rel = torch.multinomial(off_probs, 1).item()
                 
-                # 3. Character (Top-K)
+                # 3. Character Selection
                 char_logits = actions['cursor_chars'][:, 0, :]
                 top_k = BrainConfig.CURSOR_TOP_K
                 top_probs, top_indices = torch.topk(torch.softmax(char_logits, dim=-1), top_k)
                 idx_in_top = torch.multinomial(top_probs, 1)
                 next_char_idx = top_indices.gather(1, idx_in_top).item()
                 
-                # Apply Action
-                base_idx = max(0, len(pred_chars) - BrainConfig.SCOUT_WINDOW_SIZE)
-                target_idx = min(len(pred_chars), base_idx + offset_rel)
+                # --- STALL PROTECTION ---
+                # If model chooses NoOp (0) or Delete (3) repeatedly without growing, force Append.
+                if action == 0: 
+                    stall_counter += 1
+                elif action == 3: # Delete
+                    stall_counter += 0.5 # Deleting is valid but too much is bad
+                else:
+                    stall_counter = max(0, stall_counter - 1) # Reset if productive
                 
-                char_added = None
+                # Force Overwrite/Append if stalling
+                if stall_counter > 5:
+                    action = 2 # Force Overwrite/Append
+                    offset_rel = BrainConfig.SCOUT_WINDOW_SIZE # Force end of window
+                    stall_counter = 0
+                    # Ensure we output a visible char if stalling
+                    if next_char_idx < 32:
+                         next_char_idx = random.choice([32, 46, 63, 33]) # Space, ., ?, !
+                
+                # --- APPLY ACTION ---
+                
+                # Calculate absolute target index
+                # offset_rel is 0..WindowSize. 
+                # 0 means "at the start of window", WindowSize means "at the end (append)"
+                # We map this to the end of pred_chars.
+                
+                # Base is the start of the current window in the full sequence
+                base_idx = max(0, len(pred_chars) - BrainConfig.SCOUT_WINDOW_SIZE)
+                target_idx = base_idx + offset_rel
+                
+                # Clamp target_idx
+                target_idx = min(len(pred_chars), max(0, target_idx))
+                
+                # CRITICAL: Prompt Protection
+                # Never allow editing before the prompt ends
+                if target_idx < original_len:
+                    target_idx = len(pred_chars) # Redirect to end (Append)
+                    action = 2 # Force Append mode
                 
                 if action == 1: # Insert
                     pred_chars.insert(target_idx, next_char_idx)
-                    char_added = next_char_idx
-                elif action == 2: # Overwrite
+                elif action == 2: # Overwrite / Append
                     if target_idx < len(pred_chars):
                         pred_chars[target_idx] = next_char_idx
                     else:
                         pred_chars.append(next_char_idx)
-                    char_added = next_char_idx
                 elif action == 3: # Delete
                     if target_idx < len(pred_chars):
                         pred_chars.pop(target_idx)
-                else: # NoOp
-                    pass
+                # else NoOp: do nothing
                 
-                # Stop check if "User:" is generated
-                current_text = "".join([chr(min(255, c)) for c in pred_chars])
-                if "User:" in current_text:
-                     # Trim and break
-                     generated_text = current_text.split("User:")[0]
-                     # Remove prompt prefix
-                     if generated_text.startswith(prompt_text):
-                         generated_text = generated_text[len(prompt_text):]
-                     break
+                # --- STOP TOKEN CHECK ---
+                # Check for "User:" in the *newly generated* portion only
+                # We strictly look after original_len to avoid matching the prompt itself
                 
-                # For streaming output in UI, we might want to update prediction_result iteratively
-                # But here we just rebuild at the end or if we want to show progress
+                generated_chars = pred_chars[original_len:]
+                generated_str = "".join([chr(c) if c < 256 else '?' for c in generated_chars])
+                
+                if "User:" in generated_str:
+                    log_debug("Stop token 'User:' found. Truncating.")
+                    # Found stop token!
+                    clean_gen = generated_str.split("User:")[0]
+                    
+                    # Reconstruct pred_chars to contain [Padding + Prompt] + [Clean Generated]
+                    clean_bytes = [ord(c) if ord(c) < 256 else 63 for c in clean_gen]
+                    pred_chars = pred_chars[:original_len] + clean_bytes
+                    break
             
-            final_text = "".join([chr(min(255, c)) for c in pred_chars])
+            # 4. Finalize Output
+            final_text = "".join([chr(c) if c < 256 else '?' for c in pred_chars])
             
-            # Remove the original prompt from the result to return only generated part
-            if final_text.startswith(prompt_text):
-                generated_text = final_text[len(prompt_text):]
-            else:
-                generated_text = final_text
+            # Extract only the generated part (excluding prompt and padding)
+            generated_text = final_text[original_len:]
+            
+            log_debug(f"Generated raw text: '{generated_text}' (len: {len(generated_text)})")
+
+            # Sanitize for GUI
+            generated_text = "".join([c for c in generated_text if ord(c) >= 32 or c == '\n'])
+            
+            if not generated_text:
+                log_error("Generated text is empty after sanitization!")
+                generated_text = "[Error: Model generated no visible text. See greg_debug.log]"
             
             self.prediction_result = f"Greg: {generated_text}"
+            self.status_message = f"Replied ({len(generated_text)} chars)"
             return generated_text
 
     def generate_chat_response(self, chat_history, user_message):

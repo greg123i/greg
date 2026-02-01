@@ -12,3 +12,5 @@ alwaysApply: true
  - have short functions, methods and classes: make them at most 50 lines, 100 lines for classes, else, shorten them or split them up
  
  - make files short: keep them 500 lines or less, else, shorten it or make them multiple files so no god file will mess up everything via having bugs u cant look for
+ 
+ - if you cant fix code using this, refer to the guso.md file
