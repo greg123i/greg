@@ -1,6 +1,7 @@
 import os
 import sys
 import datetime
+import threading
 
 # Ensure project root is on sys.path so we can import lib.*
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -139,12 +140,11 @@ def run_gui():
     
     train_button = Button(0, 0, 160, 40, "Train Model", color=GREEN, tooltip="Start training with current parameters")
     stop_button = Button(0, 0, 100, 40, "Stop", color=(200, 50, 50), tooltip="Stop current training session")
-    fetch_button = Button(0, 0, 160, 40, "Fetch Data", color=DARK_GRAY, tooltip="Crawl web for more training data (auto-sorts)")
-    sort_button = Button(0, 0, 160, 40, "Sort Data", color=DARK_GRAY, tooltip="Classify and sort data using Ollama")
+    fetch_button = Button(0, 0, 160, 40, "Fetch Data", color=DARK_GRAY, tooltip="Crawl web for more training data")
     graph_button = Button(0, 0, 140, 40, "Graph: OFF", color=DARK_GRAY, tooltip="Toggle loss history graph")
     dump_button = Button(0, 0, 140, 40, "Dump Log", color=(180, 180, 50), tooltip="Save error logs to file and clipboard")
     
-    training_buttons = [train_button, stop_button, fetch_button, sort_button, graph_button, dump_button]
+    training_buttons = [train_button, stop_button, fetch_button, graph_button, dump_button]
 
     # Layout Update Function
     def update_layout(w, h):
@@ -208,8 +208,7 @@ def run_gui():
         # Row 2 (Utilities)
         btn_y_row2 = btn_y + 50
         fetch_button.rect.topleft = (params_x, btn_y_row2)
-        sort_button.rect.topleft = (fetch_button.rect.right + 20, btn_y_row2)
-        graph_button.rect.topleft = (sort_button.rect.right + 20, btn_y_row2)
+        graph_button.rect.topleft = (fetch_button.rect.right + 20, btn_y_row2)
         dump_button.rect.topleft = (graph_button.rect.right + 20, btn_y_row2)
         
         # Ensure Status Bar is at bottom
@@ -329,7 +328,10 @@ def run_gui():
             with open(message_path, "w", encoding="utf-8") as f:
                 f.write(log_content)
 
-            status_text = f"Log saved to {fname} & latest_message.txt"
+            # 3. Export Diagnostics
+            diag_file = model.export_diagnostics()
+            
+            status_text = f"Log saved. Diagnostics: {os.path.basename(diag_file)}"
         except Exception as e:
             status_text = f"Dump failed: {e}"
 
@@ -341,22 +343,11 @@ def run_gui():
         model.fetch_training_data(target_count=10000)
         status_text = "Crawling for 10k files..."
 
-    def on_sort_data():
-        nonlocal status_text
-        if model.is_training:
-            status_text = "Busy training, cannot sort data now."
-            return
-        from lib.data_tools import classify_and_sort
-        status_text = "Sorting data with Ollama... Check Terminal."
-        count = classify_and_sort(model.data_directory)
-        status_text = f"Sorted {count} files."
-    
     # Assign actions
     send_button.action = on_send
     train_button.action = on_train
     stop_button.action = on_stop
     fetch_button.action = on_fetch_data
-    sort_button.action = on_sort_data
     graph_button.action = on_graph
     dump_button.action = on_dump_log
 
@@ -395,7 +386,7 @@ def run_gui():
         # Hover Checks
         mouse_pos = pygame.mouse.get_pos()
         hovered_element = None
-
+        
         for btn in nav_buttons:
             if btn.check_hover(mouse_pos):
                 hovered_element = btn

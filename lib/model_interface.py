@@ -16,10 +16,11 @@ if project_root not in sys.path:
 from lib.brain.model import GregBrain
 from lib.brain.config import BrainConfig
 from lib.data_loader import load_raw_text_data, load_text_data
-from lib.data_tools import download_tinystories_subset, generate_ollama_data, crawl_and_scrape, classify_and_sort
+from lib.data_tools import download_tinystories_subset, generate_ollama_data, crawl_and_scrape
 
 from lib.data_loader import load_raw_byte_data, FileAnalyzer
 from lib.debug_utils import log_debug, log_error
+from lib.diagnostics import DiagnosticsManager
 
 class ModelInterface:
     def load_checkpoint(self):
@@ -105,6 +106,9 @@ class ModelInterface:
         self.data_directory = os.path.join(project_root, 'app', 'data')
         self.training_inputs = None # Loaded on demand or training start
         self.analyzer = FileAnalyzer(self.data_directory)
+        
+        # Diagnostics
+        self.diag_manager = DiagnosticsManager(os.path.join(project_root, 'diagnostics'))
     
     def load_difficulty(self):
         if os.path.exists(self.difficulty_file):
@@ -213,22 +217,35 @@ class ModelInterface:
         return torch.tensor(list(buf), dtype=torch.long) if buf else None
     
     def get_diagnostics(self):
+        metrics = self.diag_manager.get_latest()
         lines = []
         lines.append(f"Device: {self.device}")
         lines.append(f"ScoutWin: {BrainConfig.SCOUT_WINDOW_SIZE} Scouts: {BrainConfig.SCOUT_COUNT} Cursors: {BrainConfig.CURSOR_COUNT}")
+        
         if 'selected_file' in self.diag:
             lines.append(f"File: {self.diag.get('selected_file')}")
-        if 'epoch' in self.diag:
-            lines.append(f"Epoch: {self.diag.get('epoch')}/{self.diag.get('epochs')}")
-        if 'step_time_ms' in self.diag:
-            lines.append(f"Step ms: {self.diag.get('step_time_ms'):.2f}  TPS: {self.diag.get('tokens_per_sec'):.1f}")
-        if 'mc_loss' in self.diag:
-            lines.append(f"MC Loss: {self.diag.get('mc_loss'):.6f}")
-        if 'last_loss' in self.diag:
-            lines.append(f"Last Loss: {self.diag.get('last_loss'):.4f}")
-        if 'mode' in self.diag:
-            lines.append(f"Mode: {self.diag.get('mode')}")
+            
+        lines.append("-" * 20)
+        lines.append(f"Epoch: {metrics.get('epoch', 0)} | Step: {metrics.get('step', 0)}")
+        lines.append(f"Loss: {metrics.get('loss', 0.0):.6f}")
+        lines.append(f"LR: {metrics.get('learning_rate', 0.0):.2e}")
+        lines.append(f"Grad Norm: {metrics.get('grad_norm', 0.0):.4f}")
+        
+        ppx = metrics.get('perplexity', 0.0)
+        ppx_str = f"{ppx:.2f}" if ppx < 10000 else "Inf"
+        lines.append(f"Perplexity: {ppx_str}")
+        
+        lines.append(f"Speed: {metrics.get('tokens_per_sec', 0.0):.1f} tok/s")
+        
+        if metrics.get('anomalies'):
+            lines.append("--- ANOMALIES DETECTED ---")
+            for a in metrics['anomalies']:
+                lines.append(f"[!] {a}")
+                
         return lines
+
+    def export_diagnostics(self):
+        return self.diag_manager.save_snapshot()
 
     def start_training(self, epochs=2, persistent_memory=True, batch_size=16, seq_len=50, elitism_epochs=25, target_loss=1e-5, time_minutes=None):
         if self.is_training:
@@ -294,10 +311,24 @@ class ModelInterface:
                     self.is_training = False
                     return
 
-                # Initialize difficulty for new files
-                for fpath in self.analyzer.file_vectors.keys():
+                # Initialize difficulty for new files and prune old ones
+                existing_files = set(self.analyzer.file_vectors.keys())
+                
+                # Prune missing files from difficulty scores
+                for fpath in list(self.difficulty_scores.keys()):
+                    if fpath not in existing_files and not os.path.exists(fpath):
+                        del self.difficulty_scores[fpath]
+                
+                # Add new files
+                for fpath in existing_files:
                     if fpath not in self.difficulty_scores:
                         self.difficulty_scores[fpath] = 1.0
+                
+                # Verify we have playable files
+                if not self.difficulty_scores:
+                     self.status_message = "No valid files to train on."
+                     self.is_training = False
+                     return
                 
                 optimizer = torch.optim.AdamW(self.brain.parameters(), lr=BrainConfig.LEARNING_RATE, weight_decay=BrainConfig.WEIGHT_DECAY)
                 # Scheduler to handle plateaus
@@ -317,9 +348,9 @@ class ModelInterface:
                     total_epoch_loss = 0
                     
                     # Fix: Safe seq_len jitter to avoid empty range
-                    # Ensure seq_len is at least 30 to make jitter safe
-                    safe_seq_len = max(30, int(seq_len))
-                    actual_seq_len = random.randint(safe_seq_len - 15, safe_seq_len + 15)
+                    # Ensure seq_len is large enough for Scout Window
+                    safe_seq_len = max(BrainConfig.SCOUT_WINDOW_SIZE + 10, int(seq_len))
+                    actual_seq_len = random.randint(safe_seq_len - 5, safe_seq_len + 5)
                     
                     # --- CURRICULUM SAMPLING ---
                     # Sort files by difficulty
@@ -335,7 +366,10 @@ class ModelInterface:
                         with open(selected_file, 'rb') as f:
                             b = f.read().replace(b"<|endoftext|>", b"").replace(b"<|endoftext", b"")
                             epoch_data = torch.tensor(list(b), dtype=torch.long)
-                    except:
+                    except Exception as e:
+                        print(f"Error loading {selected_file}: {e}")
+                        if selected_file in self.difficulty_scores:
+                            del self.difficulty_scores[selected_file]
                         continue
                     
                     if len(epoch_data) < actual_seq_len + 10:
@@ -409,12 +443,23 @@ class ModelInterface:
                             
                             avg_loss = loss_seq / seq_steps
                             avg_loss.backward()
-                            torch.nn.utils.clip_grad_norm_(self.brain.parameters(), 1.0)
+                            grad_norm = torch.nn.utils.clip_grad_norm_(self.brain.parameters(), 1.0)
                             optimizer.step()
                             
                             dt = (time.time() - t0) * 1000.0
                             self.diag['step_time_ms'] = dt
-                            self.diag['tokens_per_sec'] = (seq_steps * batch_size) / max(1e-6, (dt / 1000.0))
+                            tokens_per_sec = (seq_steps * batch_size) / max(1e-6, (dt / 1000.0))
+                            self.diag['tokens_per_sec'] = tokens_per_sec
+
+                            # Diagnostics Update
+                            self.diag_manager.update({
+                                "loss": avg_loss.item(),
+                                "learning_rate": optimizer.param_groups[0]['lr'],
+                                "grad_norm": grad_norm.item(),
+                                "step": step,
+                                "epoch": epoch + 1,
+                                "tokens_per_sec": tokens_per_sec
+                            })
                             
                             persistent_state = self.brain.detach_state(state)
                             total_epoch_loss += avg_loss.item()
@@ -491,12 +536,23 @@ class ModelInterface:
                             
                             avg_loss = loss_seq / seq_steps
                             avg_loss.backward()
-                            torch.nn.utils.clip_grad_norm_(self.brain.parameters(), 1.0)
+                            grad_norm = torch.nn.utils.clip_grad_norm_(self.brain.parameters(), 1.0)
                             optimizer.step()
                             
                             dt = (time.time() - t0) * 1000.0
                             self.diag['step_time_ms'] = dt
-                            self.diag['tokens_per_sec'] = (seq_steps * batch_size) / max(1e-6, (dt / 1000.0))
+                            tokens_per_sec = (seq_steps * batch_size) / max(1e-6, (dt / 1000.0))
+                            self.diag['tokens_per_sec'] = tokens_per_sec
+
+                            # Diagnostics Update
+                            self.diag_manager.update({
+                                "loss": avg_loss.item(),
+                                "learning_rate": optimizer.param_groups[0]['lr'],
+                                "grad_norm": grad_norm.item(),
+                                "step": i,
+                                "epoch": epoch + 1,
+                                "tokens_per_sec": tokens_per_sec
+                            })
                             total_epoch_loss += avg_loss.item()
                             
                             if i % 10 == 0:
@@ -596,6 +652,7 @@ class ModelInterface:
                         prediction = "".join([chr(min(255, c)) for c in pred_chars])
                         
                         self.prediction_result = prediction
+                        self.diag_manager.update({"sample_output": prediction})
                         print(f"Epoch {epoch+1} Prediction: {prediction}")
 
                     # End of Epoch Tasks
@@ -660,12 +717,9 @@ class ModelInterface:
             try:
                 success = crawl_and_scrape(self.data_directory, target_count=target_count)
                 if success:
-                    self.status_message = "Data collection complete! Sorting..."
-                    classify_and_sort(self.data_directory)
-                    self.status_message = "Data sorted by quality."
+                    self.status_message = "Data collection complete!"
                 else:
-                    self.status_message = "Data collection finished early. Sorting..."
-                    classify_and_sort(self.data_directory)
+                    self.status_message = "Data collection finished."
             except Exception as e:
                 self.status_message = f"Crawl Error: {e}"
             

@@ -69,7 +69,8 @@ def process_files():
         # Read sample
         try:
             with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
+                # OPTIMIZATION: Only read first 2000 chars
+                content = f.read(2000)
         except Exception as e:
             print(f"Error reading {fname}: {e}")
             continue

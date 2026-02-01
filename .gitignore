@@ -2,9 +2,9 @@ pycache/*
 __pycache__/*
 data/*
 app/data/*
+checkpoints/*
 *.pyc
 *.npz
 *.pth
 *.npy
 *.txt
-*.pth

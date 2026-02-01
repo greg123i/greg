@@ -56,8 +56,17 @@ class FileAnalyzer:
         paths = list(self.file_vectors.keys())
         vectors = np.array([self.file_vectors[p] for p in paths])
         
+        # Adjust k if we don't have enough files
+        num_files = len(vectors)
+        if num_files < k:
+            print(f"Warning: Only {num_files} files available. Reducing clusters to {num_files}.")
+            k = num_files
+            
+        if k == 0:
+            return
+
         # Initialize centroids randomly from existing vectors
-        centroids = vectors[np.random.choice(len(vectors), k, replace=False)]
+        centroids = vectors[np.random.choice(num_files, k, replace=False)]
         
         for _ in range(10): # 10 iterations is enough for this
             # Assign clusters
@@ -256,6 +265,59 @@ def load_raw_text_data(data_directory=None):
     # Convert to ASCII array
     ascii_vals = [ord(c) for c in all_text_content]
     return np.array(ascii_vals, dtype=np.float32)
+
+def load_fim_data(samples=1000, max_len=1024):
+    """
+    Generates Fill-In-The-Middle (FIM) training data.
+    Format: <|prefix|>...<|suffix|>... -> Target: <|middle|>...
+    
+    For simplicity in this char-level model, we return a single sequence:
+    "<|prefix|>...<|suffix|>...<|middle|>..."
+    The model should learn to generate the end (which is the middle).
+    """
+    raw_text_data_arr = load_raw_text_data() # Returns numpy array of ascii vals
+    # Clean and split into "stories" (approx 500-1000 chars)
+    # Using simple chunks for now if no clear delimiters
+    total_len = len(raw_text_data_arr)
+    chunk_size = 1000
+    
+    fim_sequences = []
+    
+    for _ in range(samples):
+        if total_len < chunk_size + 10:
+             break
+             
+        start = random.randint(0, total_len - chunk_size - 1)
+        # Convert chunk back to string
+        chunk_arr = raw_text_data_arr[start : start + chunk_size]
+        chunk = "".join([chr(int(c)) for c in chunk_arr]).strip()
+        
+        if len(chunk) < 100: continue
+        
+        # Split 30-40-30
+        n = len(chunk)
+        p_end = int(n * 0.3)
+        s_start = int(n * 0.7)
+        
+        prefix = chunk[:p_end]
+        middle = chunk[p_end:s_start]
+        suffix = chunk[s_start:]
+        
+        # Construct FIM format
+        # Note: Greg uses char-level, so these tags are just char sequences.
+        # Ideally we'd have special tokens, but we use text tags.
+        fim_text = f"<|prefix|>{prefix}<|suffix|>{suffix}<|middle|>{middle}"
+        
+        # Truncate to max_len if needed
+        if len(fim_text) > max_len:
+            fim_text = fim_text[:max_len]
+            
+        # Convert to ASCII codes
+        fim_seq = [ord(c) for c in fim_text]
+        fim_sequences.append(fim_seq)
+        
+    return fim_sequences
+
 
 def generate_text_data_fallback(samples=1000, sequence_length=10, target_length=1):
     """
