@@ -19,6 +19,28 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+class AttentionBlock(nn.Module):
+    """
+    Standard Multi-Head Attention Block with Residual Connection and LayerNorm.
+    """
+    def __init__(self, embed_dim, num_heads, dropout=0.1):
+        super().__init__()
+        self.mha = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.norm = nn.LayerNorm(embed_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x):
+        """
+        Args:
+            x: (Batch, SeqLen, EmbedDim)
+        Returns:
+            x: (Batch, SeqLen, EmbedDim)
+        """
+        attn_out, _ = self.mha(x, x, x)
+        x = x + self.dropout(attn_out)
+        x = self.norm(x)
+        return x
+
 class WindowScoutBase(nn.Module):
     """
     Base class for Scouts and Cursors.

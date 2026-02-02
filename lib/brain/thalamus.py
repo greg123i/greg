@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from .config import BrainConfig
+from .modules import AttentionBlock
 
 class Thalamus(nn.Module):
     """
@@ -34,6 +35,9 @@ class Thalamus(nn.Module):
         self.embed = nn.Embedding(BrainConfig.VOCAB_SIZE, BrainConfig.EMBED_DIM)
         self.mood_gru = nn.GRU(BrainConfig.EMBED_DIM, 256, batch_first=True)
         self.mood_to_context = nn.Linear(256, BrainConfig.VECTOR_SIZE) # Project to context vector if needed
+        
+        # Attention
+        self.attention = AttentionBlock(BrainConfig.VECTOR_SIZE, BrainConfig.ATTENTION_HEADS, BrainConfig.DROPOUT)
 
     def forward(self, reader_vec, thinker_vec, writer_vec, current_token_idx, hidden_state=None, mood_hidden=None):
         """
@@ -43,7 +47,14 @@ class Thalamus(nn.Module):
             writer_vec: (Batch, VectorSize)
             current_token_idx: (Batch,) LongTensor - Current token being processed
         """
-        combined = torch.cat([reader_vec, thinker_vec, writer_vec], dim=1)
+        # Stack inputs: (Batch, 3, VectorSize)
+        inputs_stacked = torch.stack([reader_vec, thinker_vec, writer_vec], dim=1)
+        
+        # Apply Attention
+        inputs_attended = self.attention(inputs_stacked)
+        
+        # Flatten: (Batch, 3 * VectorSize)
+        combined = inputs_attended.view(inputs_attended.size(0), -1)
         
         output, next_hidden = self.rnn(combined.unsqueeze(1), hidden_state)
         output = output.squeeze(1)

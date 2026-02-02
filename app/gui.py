@@ -305,9 +305,12 @@ def run_gui():
         model.stop_training()
 
     def on_graph():
-        model.show_loss_graph = not model.show_loss_graph
-        graph_button.text = "Graph: ON" if model.show_loss_graph else "Graph: OFF"
-        graph_button.color = GREEN if model.show_loss_graph else DARK_GRAY
+        model.graph_mode = (model.graph_mode + 1) % 3
+        modes = ["OFF", "SMOOTH", "RAW"]
+        colors = [DARK_GRAY, GREEN, (200, 100, 50)]
+        model.show_loss_graph = (model.graph_mode > 0)
+        graph_button.text = f"Graph: {modes[model.graph_mode]}"
+        graph_button.color = colors[model.graph_mode]
 
     def on_dump_log():
         nonlocal status_text
@@ -482,24 +485,55 @@ def run_gui():
                     screen.blit(ps, (diag_area_rect.x + 10, pred_y + 20 + (i * 18)))
 
             # Draw Loss Graph if enabled
-            if model.show_loss_graph and len(model.loss_history) > 2:
+            data_source = model.loss_history if model.graph_mode == 1 else model.raw_loss_history
+            if model.show_loss_graph and len(data_source) > 2:
                 graph_rect = pygame.Rect(diag_area_rect.x + 10, diag_area_rect.bottom - 60, diag_w - 20, 50)
                 pygame.draw.rect(screen, BLACK, graph_rect)
                 pygame.draw.rect(screen, GRAY, graph_rect, 1)
                 
-                points = []
-                max_l = max(model.loss_history)
-                min_l = min(model.loss_history)
+                history_subset = data_source[-100:]
+                if not history_subset: history_subset = [0]
+                
+                max_l = max(history_subset)
+                min_l = min(history_subset)
                 l_range = max(1e-6, max_l - min_l)
                 
-                history_subset = model.loss_history[-100:] # Only show last 100 points
+                points = []
                 for i, val in enumerate(history_subset):
-                    px = graph_rect.x + (i / len(history_subset)) * graph_rect.width
+                    px = graph_rect.x + (i / max(1, len(history_subset)-1)) * graph_rect.width
                     py = graph_rect.bottom - ((val - min_l) / l_range) * graph_rect.height
                     points.append((px, py))
                 
+                line_color = GREEN if model.graph_mode == 1 else (200, 100, 50)
                 if len(points) > 1:
-                    pygame.draw.lines(screen, GREEN, False, points, 2)
+                    pygame.draw.lines(screen, line_color, False, points, 2)
+
+                # Interactive Tooltip
+                if graph_rect.collidepoint(mouse_pos):
+                     rel_x = mouse_pos[0] - graph_rect.x
+                     hover_idx = int((rel_x / graph_rect.width) * len(history_subset))
+                     hover_idx = max(0, min(len(history_subset)-1, hover_idx))
+                     
+                     if hover_idx < len(points):
+                        hx, hy = points[hover_idx]
+                        val = history_subset[hover_idx]
+                        
+                        # Draw Marker
+                        pygame.draw.circle(screen, WHITE, (int(hx), int(hy)), 4)
+                        pygame.draw.line(screen, (100, 100, 100), (int(hx), graph_rect.top), (int(hx), graph_rect.bottom), 1)
+                        
+                        # Draw Tooltip
+                        tip_text = f"L: {val:.4f}"
+                        ts = small_font.render(tip_text, True, WHITE)
+                        tip_rect = ts.get_rect(bottomleft=(int(hx), int(hy) - 10))
+                        
+                        # Clamp tooltip
+                        if tip_rect.right > width - 10: tip_rect.right = width - 10
+                        if tip_rect.left < 10: tip_rect.left = 10
+                        
+                        pygame.draw.rect(screen, (40, 40, 40), tip_rect.inflate(8, 4))
+                        pygame.draw.rect(screen, WHITE, tip_rect.inflate(8, 4), 1)
+                        screen.blit(ts, tip_rect)
 
             # Update Window Title based on state
         if model.is_training:

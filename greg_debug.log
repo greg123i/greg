@@ -1,8 +1,0 @@
-2026-02-01 16:01:57,929 - DEBUG - predict_greg called with prompt: 'User: hi|AI:'
-2026-02-01 16:01:57,933 - DEBUG - Padded prompt bytes len: 49
-2026-02-01 16:01:57,937 - DEBUG - Starting generation loop. Target len: 143, Max steps: 429
-2026-02-01 16:02:02,039 - DEBUG - Generated raw text: '2äxi2Ri±ÍJJ3J33\x83\x83J2ã\x832\x832ö3\x83ãö22ö2222k3köJJ3ö3çJ'ç'3ç3ö±'k3J2J2ç2R]5/ãR/g/RR/gJRøg8À2ü3ö' (len: 87)
-2026-02-01 16:02:12,307 - DEBUG - predict_greg called with prompt: 'User: this is before training|AI:'
-2026-02-01 16:02:12,311 - DEBUG - Padded prompt bytes len: 49
-2026-02-01 16:02:12,313 - DEBUG - Starting generation loop. Target len: 59, Max steps: 177
-2026-02-01 16:02:13,649 - DEBUG - Generated raw text: '2ÅÅ±2Â8\x8bR9¢¦ã8893ö239«\x8b­ï\x8b/ãR\x8fÂJÂä9RKã5ã99ãRÂ33' (len: 47)

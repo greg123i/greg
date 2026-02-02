@@ -5,6 +5,7 @@ import random
 import os
 import sys
 import time
+import json
 
 # Add project root to sys.path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +34,14 @@ class ModelInterface:
                 if 'model_state_dict' in checkpoint:
                     try:
                         self.brain.load_state_dict(checkpoint['model_state_dict'])
+                        if 'loss_history' in checkpoint:
+                            self.loss_history = checkpoint['loss_history']
+                        if 'raw_loss_history' in checkpoint:
+                            self.raw_loss_history = checkpoint['raw_loss_history']
+                        elif self.loss_history:
+                            # Backfill raw with smooth if missing (for old checkpoints)
+                            self.raw_loss_history = list(self.loss_history)
+                        
                         print("Checkpoint loaded successfully.")
                         self.status_message = "Loaded previous training progress."
                     except RuntimeError as e:
@@ -87,16 +96,21 @@ class ModelInterface:
         self.elite_path = os.path.join(self.checkpoints_dir, 'greg_brain_elite.pth')
         self.history = [] # List of (epoch, loss, state_dict)
         
+        self.loss_history = [] # For graphing (EMA)
+        self.raw_loss_history = [] # For graphing (Raw)
+        self.loss_ema = None # Exponential Moving Average for smoothing
+        self.show_loss_graph = False
+        self.graph_mode = 0 # 0=Off, 1=Smooth, 2=Raw
+        self.loss_log_path = os.path.join(project_root, 'diagnostics', 'loss_history.json')
+        
         self.load_checkpoint()
         
         self.is_training = False
-        self.stop_requested = False # Flag to end training early
+        self.stop_requested = False 
         self.training_thread = None
         self.prediction_result = ""
         self.training_sample = ""
         self.diag = {}
-        self.loss_history = [] # For graphing
-        self.show_loss_graph = False
         
         # Curriculum Learning
         self.difficulty_file = os.path.join(project_root, 'difficulty_scores.json')
@@ -135,7 +149,8 @@ class ModelInterface:
             torch.save({
                 'model_state_dict': self.brain.state_dict(),
                 'difficulty': self.difficulty_scores,
-                'loss_history': self.loss_history
+                'loss_history': self.loss_history,
+                'raw_loss_history': self.raw_loss_history
             }, target)
             print("Checkpoint saved.")
         except Exception as e:
@@ -464,11 +479,19 @@ class ModelInterface:
                             persistent_state = self.brain.detach_state(state)
                             total_epoch_loss += avg_loss.item()
                             
+                            # Update EMA Loss
+                            current_loss_val = avg_loss.item()
+                            if self.loss_ema is None:
+                                self.loss_ema = current_loss_val
+                            else:
+                                self.loss_ema = 0.9 * self.loss_ema + 0.1 * current_loss_val
+                            
                             # Track loss for graphing
                             if step % 10 == 0:
-                                self.loss_history.append(avg_loss.item())
+                                self.loss_history.append(self.loss_ema)
                                 if len(self.loss_history) > 1000: self.loss_history.pop(0)
-                                self.status_message = f"Ep {epoch+1} | Loss: {avg_loss.item():.4f}"
+                                self.status_message = f"Ep {epoch+1} | Loss: {self.loss_ema:.4f}"
+                                self._save_loss_history()
                             
                             # Update difficulty: Increase by tiny bit every step
                             self.difficulty_scores[selected_file] += 0.001
@@ -555,10 +578,21 @@ class ModelInterface:
                             })
                             total_epoch_loss += avg_loss.item()
                             
+                            # Update EMA Loss
+                            current_loss_val = avg_loss.item()
+                            if self.loss_ema is None:
+                                self.loss_ema = current_loss_val
+                            else:
+                                self.loss_ema = 0.9 * self.loss_ema + 0.1 * current_loss_val
+                            
                             if i % 10 == 0:
-                                self.loss_history.append(avg_loss.item())
-                                if len(self.loss_history) > 1000: self.loss_history.pop(0)
-                                self.status_message = f"Ep {epoch+1} | Loss: {avg_loss.item():.4f}"
+                                self.loss_history.append(self.loss_ema)
+                                self.raw_loss_history.append(current_loss_val)
+                                if len(self.loss_history) > 1000: 
+                                    self.loss_history.pop(0)
+                                    self.raw_loss_history.pop(0)
+                                self.status_message = f"Ep {epoch+1} | Loss: {self.loss_ema:.4f}"
+                                self._save_loss_history()
                             
                             # Increase difficulty
                             self.difficulty_scores[selected_file] += 0.001
@@ -591,7 +625,11 @@ class ModelInterface:
                         for t in range(BrainConfig.SCOUT_WINDOW_SIZE, len(input_chars)):
                             window = input_tensor[:, t-BrainConfig.SCOUT_WINDOW_SIZE:t]
                             r_win = window.unsqueeze(1).expand(-1, BrainConfig.SCOUT_COUNT, -1)
-                            w_win = window.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
+                            
+                            # Fix: Slice for writer window size
+                            w_slice = window[:, -BrainConfig.CURSOR_WINDOW_SIZE:]
+                            w_win = w_slice.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
+                            
                             actions, state = self.brain(r_win, w_win, state)
                         
                         # Generate new text
@@ -607,7 +645,11 @@ class ModelInterface:
                             last_window = torch.tensor(window_chars, dtype=torch.long).unsqueeze(0).to(self.device)
                             
                             r_win = last_window.unsqueeze(1).expand(-1, BrainConfig.SCOUT_COUNT, -1)
-                            w_win = last_window.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
+                            
+                            # Fix: Slice for writer window size
+                            w_slice = last_window[:, -BrainConfig.CURSOR_WINDOW_SIZE:]
+                            w_win = w_slice.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
+                            
                             actions, state = self.brain(r_win, w_win, state)
                             
                             # Cursor 0 Logic
@@ -773,6 +815,7 @@ class ModelInterface:
             # 3. Generation Loop
             pred_chars = list(prompt_bytes) # Working mutable list
             original_len = len(pred_chars)  # Boundary of user prompt
+            edit_cursor_idx = len(pred_chars) # Start editing at end
             
             if target_len is None:
                 target_len = random.randint(50, 200) # Shorter default for responsiveness
@@ -790,23 +833,21 @@ class ModelInterface:
                     log_debug("Target length reached.")
                     break
                 
-                # Construct Reader Input Window (Last SCOUT_WINDOW_SIZE chars)
-                if current_len < BrainConfig.SCOUT_WINDOW_SIZE:
-                    # Pad left with spaces if we deleted too much
-                    window_chars = [32] * (BrainConfig.SCOUT_WINDOW_SIZE - current_len) + pred_chars
-                else:
-                    window_chars = pred_chars[-BrainConfig.SCOUT_WINDOW_SIZE:]
-                
-                r_window = torch.tensor(window_chars, dtype=torch.long, device=self.device).unsqueeze(0)
+                # Construct Reader/Writer windows centered around edit_cursor_idx
+                r_start = max(0, edit_cursor_idx - BrainConfig.SCOUT_WINDOW_SIZE)
+                r_end = edit_cursor_idx
+                r_list = pred_chars[r_start:r_end]
+                if len(r_list) < BrainConfig.SCOUT_WINDOW_SIZE:
+                    r_list = [32] * (BrainConfig.SCOUT_WINDOW_SIZE - len(r_list)) + r_list
+                r_window = torch.tensor(r_list, dtype=torch.long, device=self.device).unsqueeze(0)
                 r_win = r_window.unsqueeze(1).expand(-1, BrainConfig.SCOUT_COUNT, -1)
-                
-                # Construct Writer Input Window (Last CURSOR_WINDOW_SIZE chars)
-                if current_len < BrainConfig.CURSOR_WINDOW_SIZE:
-                    w_chars = [32] * (BrainConfig.CURSOR_WINDOW_SIZE - current_len) + pred_chars
-                else:
-                    w_chars = pred_chars[-BrainConfig.CURSOR_WINDOW_SIZE:]
-                    
-                w_window = torch.tensor(w_chars, dtype=torch.long, device=self.device).unsqueeze(0)
+
+                w_start = max(0, edit_cursor_idx - BrainConfig.CURSOR_WINDOW_SIZE)
+                w_end = edit_cursor_idx
+                w_list = pred_chars[w_start:w_end]
+                if len(w_list) < BrainConfig.CURSOR_WINDOW_SIZE:
+                    w_list = [32] * (BrainConfig.CURSOR_WINDOW_SIZE - len(w_list)) + w_list
+                w_window = torch.tensor(w_list, dtype=torch.long, device=self.device).unsqueeze(0)
                 w_win = w_window.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
                 
                 # Forward Pass
@@ -824,6 +865,15 @@ class ModelInterface:
                 off_probs = torch.softmax(off_logits, dim=-1)
                 offset_rel = torch.multinomial(off_probs, 1).item()
                 
+                # --- FIX: STABILIZATION ---
+                # Since Action and Offset heads are unsupervised (loss only tracks characters),
+                # they act randomly and cause gibberish. We force standard Append behavior.
+                stabilized_mode = True 
+                if stabilized_mode:
+                    action = 2 # Force Overwrite/Append
+                    offset_rel = BrainConfig.SCOUT_WINDOW_SIZE # Force End (Append)
+                # ---------------------------
+
                 # 3. Character Selection
                 char_logits = actions['cursor_chars'][:, 0, :]
                 top_k = BrainConfig.CURSOR_TOP_K
@@ -831,6 +881,13 @@ class ModelInterface:
                 idx_in_top = torch.multinomial(top_probs, 1)
                 next_char_idx = top_indices.gather(1, idx_in_top).item()
                 
+                # Movement mode: if NoOp, treat offset as seek and move edit cursor
+                if action == 0:
+                    base_idx = max(0, edit_cursor_idx - BrainConfig.SCOUT_WINDOW_SIZE)
+                    new_pos = base_idx + offset_rel
+                    edit_cursor_idx = min(len(pred_chars), max(original_len, new_pos))
+                    continue
+
                 # --- STALL PROTECTION ---
                 # If model chooses NoOp (0) or Delete (3) repeatedly without growing, force Append.
                 if action == 0: 
@@ -857,7 +914,7 @@ class ModelInterface:
                 # We map this to the end of pred_chars.
                 
                 # Base is the start of the current window in the full sequence
-                base_idx = max(0, len(pred_chars) - BrainConfig.SCOUT_WINDOW_SIZE)
+                base_idx = max(0, edit_cursor_idx - BrainConfig.SCOUT_WINDOW_SIZE)
                 target_idx = base_idx + offset_rel
                 
                 # Clamp target_idx
@@ -871,14 +928,19 @@ class ModelInterface:
                 
                 if action == 1: # Insert
                     pred_chars.insert(target_idx, next_char_idx)
+                    if target_idx <= edit_cursor_idx:
+                        edit_cursor_idx += 1
                 elif action == 2: # Overwrite / Append
                     if target_idx < len(pred_chars):
                         pred_chars[target_idx] = next_char_idx
                     else:
                         pred_chars.append(next_char_idx)
+                        edit_cursor_idx = len(pred_chars)
                 elif action == 3: # Delete
                     if target_idx < len(pred_chars):
                         pred_chars.pop(target_idx)
+                        if target_idx < edit_cursor_idx:
+                            edit_cursor_idx = max(original_len, edit_cursor_idx - 1)
                 # else NoOp: do nothing
                 
                 # --- STOP TOKEN CHECK ---
@@ -937,3 +999,15 @@ class ModelInterface:
     def predict_dual(self, text):
         # Alias for compatibility if needed
         return self.predict_greg(text)
+
+    def _save_loss_history(self):
+        try:
+            os.makedirs(os.path.dirname(self.loss_log_path), exist_ok=True)
+            payload = {
+                "timestamp": int(time.time()),
+                "ema_loss_history": self.loss_history[-500:]
+            }
+            with open(self.loss_log_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+        except Exception as e:
+            log_error(f"Failed to save loss history: {e}")

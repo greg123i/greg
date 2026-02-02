@@ -37,3 +37,7 @@ class BrainConfig:
     # Optimization
     LEARNING_RATE = 1e-3 # Increased for faster initial learning
     WEIGHT_DECAY = 1e-5
+    
+    # Attention
+    ATTENTION_HEADS = 4
+    DROPOUT = 0.1

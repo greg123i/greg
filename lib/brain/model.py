@@ -150,8 +150,8 @@ if __name__ == "__main__":
     state = brain.init_state(bs, device)
     
     # Fake windows (random indices)
-    r_wins = torch.randint(0, 256, (bs, 5, 25))
-    w_wins = torch.randint(0, 256, (bs, 10, 25))
+    r_wins = torch.randint(0, 256, (bs, BrainConfig.SCOUT_COUNT, BrainConfig.SCOUT_WINDOW_SIZE))
+    w_wins = torch.randint(0, 256, (bs, BrainConfig.CURSOR_COUNT, BrainConfig.CURSOR_WINDOW_SIZE))
     
     actions, next_state = brain(r_wins, w_wins, state)
     print("Forward pass successful.")

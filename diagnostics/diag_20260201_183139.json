@@ -1,0 +1,15 @@
+{
+  "saved_at": "20260201_183139",
+  "metrics": {
+    "timestamp": 1769941899.4103315,
+    "loss": 1.8472880125045776,
+    "learning_rate": 0.001,
+    "grad_norm": 0.7040475606918335,
+    "perplexity": 6.34259513829775,
+    "tokens_per_sec": 931.1998346212252,
+    "step": 1791,
+    "epoch": 1,
+    "sample_output": "",
+    "anomalies": []
+  }
+}

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from .config import BrainConfig
-from .modules import WindowScoutBase
+from .modules import WindowScoutBase, AttentionBlock
 
 class ReaderScout(WindowScoutBase):
     """
@@ -45,6 +45,9 @@ class Interpreter(nn.Module):
         
         # 3. Scout Activation (On/Off logits for each scout)
         self.scout_active_logits = nn.Linear(BrainConfig.INTERPRETER_HIDDEN_SIZE, self.num_scouts)
+        
+        # Attention
+        self.attention = AttentionBlock(self.scout_idea_size, BrainConfig.ATTENTION_HEADS, BrainConfig.DROPOUT)
 
     def forward(self, scout_vectors, thalamus_command, hidden_state=None):
         """
@@ -54,6 +57,9 @@ class Interpreter(nn.Module):
             hidden_state: RNN hidden state
         """
         batch_size = scout_vectors.size(0)
+        
+        # Attention over scouts: (Batch, NumScouts, IdeaSize)
+        scout_vectors = self.attention(scout_vectors)
         
         # Flatten scout vectors: (Batch, NumScouts * VectorSize)
         scouts_flat = scout_vectors.view(batch_size, -1)

@@ -1,0 +1,15 @@
+{
+  "saved_at": "20260202_165905",
+  "metrics": {
+    "timestamp": 1770022745.0216885,
+    "loss": 1.756922960281372,
+    "learning_rate": 0.001,
+    "grad_norm": 0.6637675166130066,
+    "perplexity": 5.794579782059116,
+    "tokens_per_sec": 832.1438258554222,
+    "step": 9,
+    "epoch": 165,
+    "sample_output": "Onocie uorar a rrililiimr Greg the AI ",
+    "anomalies": []
+  }
+}
