@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from .config import BrainConfig
-from .modules import WindowScoutBase, MLP
+from .modules import WindowScoutBase, MLP, AttentionBlock
 
 class WriterCursor(WindowScoutBase):
     """
@@ -84,8 +84,15 @@ class CentralWriter(nn.Module):
         # Send Decision (Sigmoid logic, so 1 output logit)
         self.send_logit = nn.Linear(BrainConfig.WRITER_HIDDEN_SIZE, 1)
 
+        # Attention
+        self.attention = AttentionBlock(self.vector_size, BrainConfig.ATTENTION_HEADS, BrainConfig.DROPOUT)
+
     def forward(self, cursor_vectors, thalamus_command, hidden_state=None):
         batch_size = cursor_vectors.size(0)
+        
+        # Attention over cursors
+        cursor_vectors = self.attention(cursor_vectors)
+        
         cursors_flat = cursor_vectors.view(batch_size, -1)
         combined = torch.cat([cursors_flat, thalamus_command], dim=1)
         

@@ -124,20 +124,44 @@ class InputBox:
     def draw(self, screen, font=None):
         # Draw Background
         pygame.draw.rect(screen, (50, 50, 50), self.rect)
-        # Blit the text.
-        if self.txt_surface:
-            screen.blit(self.txt_surface, (self.rect.x + 5, self.rect.y + 10))
-        # Draw the rect.
-        pygame.draw.rect(screen, self.color, self.rect, 2)
         
+        # Save current clip
+        original_clip = screen.get_clip()
+        
+        # Set clip to input box
+        screen.set_clip(self.rect)
+        
+        # Calculate scrolling
+        x_offset = 0
+        if self.txt_surface:
+            text_width = self.txt_surface.get_width()
+            available_width = self.rect.width - 10
+            if text_width > available_width:
+                # Scroll to show the end (where cursor usually is)
+                x_offset = text_width - available_width
+
+        # Blit the text with offset
+        if self.txt_surface:
+            screen.blit(self.txt_surface, (self.rect.x + 5 - x_offset, self.rect.y + 10))
+            
         # Draw Cursor
         if self.active:
-            # Calculate cursor position
+            # Calculate cursor position (always at end of text visually, so right side if scrolled)
             if self.font:
-                text_width = self.txt_surface.get_width()
-                cursor_x = self.rect.x + 5 + text_width
+                if x_offset > 0:
+                    cursor_x = self.rect.right - 5
+                else:
+                    text_width = self.txt_surface.get_width()
+                    cursor_x = self.rect.x + 5 + text_width
+                
                 cursor_y = self.rect.y + 5
                 pygame.draw.line(screen, self.cursor_color, (cursor_x, cursor_y), (cursor_x, cursor_y + self.rect.height - 10), 2)
+
+        # Restore clip
+        screen.set_clip(original_clip)
+        
+        # Draw the border (after clip restore so it's clean)
+        pygame.draw.rect(screen, self.color, self.rect, 2)
 
 class Switch:
     def __init__(self, x, y, width, height, text, initial_state=False, tooltip=None, action=None):

@@ -120,6 +120,8 @@ def run_gui():
     chat_rect = pygame.Rect(0, 0, 0, 0)
     status_rect = pygame.Rect(0, 0, 0, 0)
     training_area_rect = pygame.Rect(0, 0, 0, 0)
+    diag_area_rect = pygame.Rect(0, 0, 0, 0)
+    controls_area_rect = pygame.Rect(0, 0, 0, 0)
     
     # Chat Page Components
     input_box = InputBox(0, 0, 0, 0, font=font, tooltip="Type your message to Greg here")
@@ -134,9 +136,11 @@ def run_gui():
     ib_elite  = InputBox(0, 0, 80, 40, font=font, text="25", tooltip="Number of elite organisms to keep")
     ib_loss   = InputBox(0, 0, 80, 40, font=font, text="1e-5", tooltip="Target loss to stop training")
     ib_time   = InputBox(0, 0, 80, 40, font=font, text="0", tooltip="Max training time in minutes (0=Infinite)")
+    ib_lr     = InputBox(0, 0, 80, 40, font=font, text="1e-4", tooltip="Learning Rate")
+    ib_smooth = InputBox(0, 0, 80, 40, font=font, text="0.9", tooltip="Smoothing Factor")
     
-    param_boxes = [ib_epochs, ib_mem, ib_batch, ib_seq, ib_elite, ib_loss, ib_time]
-    param_labels = ["Epochs", "Memory Mode", "Batch Size", "Seq Length", "Elitism", "Target Loss", "Time (min)"]
+    param_boxes = [ib_epochs, ib_mem, ib_batch, ib_seq, ib_elite, ib_loss, ib_time, ib_lr, ib_smooth]
+    param_labels = ["Epochs", "Memory Mode", "Batch Size", "Seq Length", "Elitism", "Target Loss", "Time (min)", "Learning Rate", "Smooth Factor"]
     
     train_button = Button(0, 0, 160, 40, "Train Model", color=GREEN, tooltip="Start training with current parameters")
     stop_button = Button(0, 0, 100, 40, "Stop", color=(200, 50, 50), tooltip="Stop current training session")
@@ -148,14 +152,15 @@ def run_gui():
 
     # Layout Update Function
     def update_layout(w, h):
-        nonlocal chat_rect, status_rect, training_area_rect
+        nonlocal chat_rect, status_rect, training_area_rect, diag_area_rect, controls_area_rect
         
-        # Minimum size enforcement
-        if w < 800: w = 800
-        if h < 600: h = 600
+        # Minimum size enforcement (Virtual Layout Size)
+        # We calculate layout based on at least 800x600, so if the window is smaller,
+        # the content is simply clipped (off-screen) rather than squashed/broken.
+        layout_w = max(w, 800)
+        layout_h = max(h, 600)
         
-        if screen.get_width() != w or screen.get_height() != h:
-             pygame.display.set_mode((w, h), pygame.RESIZABLE)
+        # Note: Do NOT call pygame.display.set_mode here to avoid fighting the OS resize event.
 
         padding = 15
         header_height = 60
@@ -168,10 +173,10 @@ def run_gui():
             nav_x += btn.rect.width + padding
 
         # Common Status Bar at Bottom
-        status_rect.update(padding, h - status_height - padding, w - (padding * 2), status_height)
+        status_rect.update(padding, layout_h - status_height - padding, layout_w - (padding * 2), status_height)
         
         content_y = header_height + padding
-        content_h = h - header_height - status_height - (padding * 3)
+        content_h = layout_h - header_height - status_height - (padding * 3)
         
         # --- Chat Page Layout ---
         input_height = 50
@@ -179,40 +184,57 @@ def run_gui():
         
         # Chat Area
         chat_h = content_h - input_height - padding
-        chat_rect.update(padding, content_y, w - (padding * 2), chat_h)
+        chat_rect.update(padding, content_y, layout_w - (padding * 2), chat_h)
         
         # Input Area
         input_y = chat_rect.bottom + padding
-        input_box.rect.update(padding, input_y, w - (padding * 3) - send_btn_width, input_height)
+        input_box.rect.update(padding, input_y, layout_w - (padding * 3) - send_btn_width, input_height)
         send_button.rect.update(input_box.rect.right + padding, input_y, send_btn_width, input_height)
         
         # --- Training Page Layout ---
-        training_area_rect.update(padding, content_y, w - (padding * 2), content_h)
+        training_area_rect.update(padding, content_y, layout_w - (padding * 2), content_h)
         
-        # Responsive split: Diagnostics (40%) | Params (60%)
-        diag_width = int(w * 0.4)
-        params_x = padding + diag_width + 20
+        # Split: Diagnostics (40%) | Controls (Remaining)
+        diag_width = int(training_area_rect.width * 0.4)
+        gap = 20
+        controls_width = training_area_rect.width - diag_width - gap
         
-        # Param Boxes Layout
+        diag_area_rect.update(training_area_rect.x, training_area_rect.y, diag_width, training_area_rect.height)
+        controls_area_rect.update(diag_area_rect.right + gap, training_area_rect.y, controls_width, training_area_rect.height)
+        
+        # Controls Layout (Inside controls_area_rect)
+        
+        # Params
         box_width = 80
-        start_y = content_y + 40
+        label_width = 120 # Approx
+        row_height = 45
+        
+        # Center the block of params
+        content_block_w = label_width + box_width
+        start_x = controls_area_rect.x + (controls_area_rect.width - content_block_w) // 2 + label_width
+        start_y = controls_area_rect.y + 40
+        
         for i, box in enumerate(param_boxes):
-            box.rect.update(params_x + 120, start_y + (i * 50), box_width, 35)
+            box.rect.update(start_x, start_y + (i * row_height), box_width, 35)
             
-        # Training Buttons Layout (Below params)
-        btn_y = start_y + (len(param_boxes) * 50) + 20
+        # Buttons (Below params) - Flow Layout
+        btn_y = start_y + (len(param_boxes) * row_height) + 30
         
-        train_button.rect.topleft = (params_x, btn_y)
-        stop_button.rect.topleft = (train_button.rect.right + 20, btn_y)
+        current_x = controls_area_rect.x + 20
+        current_y = btn_y
         
-        # Row 2 (Utilities)
-        btn_y_row2 = btn_y + 50
-        fetch_button.rect.topleft = (params_x, btn_y_row2)
-        graph_button.rect.topleft = (fetch_button.rect.right + 20, btn_y_row2)
-        dump_button.rect.topleft = (graph_button.rect.right + 20, btn_y_row2)
+        for btn in training_buttons:
+            # Check if button fits in current row
+            if current_x + btn.rect.width > controls_area_rect.right - 20:
+                # Move to next row
+                current_x = controls_area_rect.x + 20
+                current_y += 50
+            
+            btn.rect.topleft = (current_x, current_y)
+            current_x += btn.rect.width + 20
         
-        # Ensure Status Bar is at bottom
-        status_rect.topleft = (0, h - 30)
+        # Ensure Status Bar is at bottom (update again if needed, but it's fixed relative to layout_h)
+        status_rect.topleft = (padding, layout_h - status_height - padding)
 
 
     update_layout(width, height)
@@ -286,6 +308,18 @@ def run_gui():
             elitism = int(ib_elite.text)
             target_loss = float(ib_loss.text)
             time_minutes = float(ib_time.text)
+            
+            # Parse new parameters (Assuming user might add inputs later, but hardcoding defaults for now or reading from hidden/new fields)
+            # Since user asked to "make it parameters", I should ideally add InputBoxes.
+            # For now, I'll read from new InputBoxes I'll create below, or just defaults if not present.
+            # But wait, I haven't created the InputBoxes in the GUI layout yet.
+            # I should add them.
+            
+            # Let's assume standard defaults if UI elements aren't there, 
+            # but I will add them to the UI layout in a moment.
+            initial_lr = float(ib_lr.text) if 'ib_lr' in globals() else 1e-4
+            smoothing = float(ib_smooth.text) if 'ib_smooth' in globals() else 0.9
+            
         except ValueError:
             status_text = "Invalid training parameters."
             return
@@ -297,7 +331,9 @@ def run_gui():
             seq_len=seq_len,
             elitism_epochs=elitism,
             target_loss=target_loss,
-            time_minutes=time_minutes if time_minutes > 0 else None
+            time_minutes=time_minutes if time_minutes > 0 else None,
+            initial_lr=initial_lr,
+            smoothing_factor=smoothing
         )
         status_text = f"Started training (Target: {target_loss})..."
     
@@ -427,28 +463,32 @@ def run_gui():
             send_button.draw(screen, font)
             
         elif current_page == PAGE_TRAINING:
-            # Draw Training Params
+            # --- Draw Background Islands ---
+            
+            # Diagnostics Island (Left)
+            pygame.draw.rect(screen, (10, 10, 10), diag_area_rect)
+            pygame.draw.rect(screen, DARK_GRAY, diag_area_rect, 1)
+            
+            # Controls Island (Right)
+            pygame.draw.rect(screen, (10, 10, 10), controls_area_rect)
+            pygame.draw.rect(screen, DARK_GRAY, controls_area_rect, 1)
+            
+            # --- Draw Controls Content (Right Island) ---
+            
+            # Params
             for idx, box in enumerate(param_boxes):
                 box.draw(screen, font)
-                # Draw Label (Right aligned to left of box)
+                
+                # Draw Label
                 lbl = font.render(param_labels[idx] + ":", True, GRAY)
                 lbl_rect = lbl.get_rect(midright=(box.rect.left - 10, box.rect.centery))
                 screen.blit(lbl, lbl_rect)
-            
-            # Draw Buttons
+                
+            # Buttons
             for btn in training_buttons:
                 btn.draw(screen, font)
-                
-            # Draw Diagnostics/Logs (Left side of training page)
-            diag_w = int(width * 0.4)
-            diag_area_rect = pygame.Rect(
-                training_area_rect.x, 
-                training_area_rect.y, 
-                diag_w, 
-                training_area_rect.height
-            )
-            pygame.draw.rect(screen, (10, 10, 10), diag_area_rect)
-            pygame.draw.rect(screen, DARK_GRAY, diag_area_rect, 1)
+
+            # --- Draw Diagnostics Content (Left Island) ---
             
             # Header for diagnostics
             header_s = font.render("Training Log / Diagnostics", True, WHITE)
@@ -456,8 +496,12 @@ def run_gui():
             
             diag_lines = model.get_diagnostics()
             y = diag_area_rect.y + 40
+            
+            # Determine available space for logs (leave space for prediction + graph)
+            logs_bottom_limit = diag_area_rect.bottom - 150 
+            
             for line in diag_lines:
-                if y + small_font.get_linesize() > diag_area_rect.bottom - 150: # Leave space for graph/prediction
+                if y + small_font.get_linesize() > logs_bottom_limit:
                     break
                 ts = small_font.render(line, True, WHITE)
                 screen.blit(ts, (diag_area_rect.x + 10, y))
@@ -474,7 +518,7 @@ def run_gui():
                 while p_text:
                     # Find how much fits in diag_w
                     for i in range(len(p_text), 0, -1):
-                        if small_font.size(p_text[:i])[0] < diag_w - 20:
+                        if small_font.size(p_text[:i])[0] < diag_area_rect.width - 20:
                             p_lines.append(p_text[:i])
                             p_text = p_text[i:]
                             break
@@ -486,54 +530,83 @@ def run_gui():
 
             # Draw Loss Graph if enabled
             data_source = model.loss_history if model.graph_mode == 1 else model.raw_loss_history
-            if model.show_loss_graph and len(data_source) > 2:
-                graph_rect = pygame.Rect(diag_area_rect.x + 10, diag_area_rect.bottom - 60, diag_w - 20, 50)
+            if model.show_loss_graph:
+                graph_rect = pygame.Rect(diag_area_rect.x + 10, diag_area_rect.bottom - 60, diag_area_rect.width - 20, 50)
                 pygame.draw.rect(screen, BLACK, graph_rect)
                 pygame.draw.rect(screen, GRAY, graph_rect, 1)
-                
-                history_subset = data_source[-100:]
-                if not history_subset: history_subset = [0]
-                
-                max_l = max(history_subset)
-                min_l = min(history_subset)
-                l_range = max(1e-6, max_l - min_l)
-                
-                points = []
-                for i, val in enumerate(history_subset):
-                    px = graph_rect.x + (i / max(1, len(history_subset)-1)) * graph_rect.width
-                    py = graph_rect.bottom - ((val - min_l) / l_range) * graph_rect.height
-                    points.append((px, py))
-                
-                line_color = GREEN if model.graph_mode == 1 else (200, 100, 50)
-                if len(points) > 1:
-                    pygame.draw.lines(screen, line_color, False, points, 2)
 
-                # Interactive Tooltip
-                if graph_rect.collidepoint(mouse_pos):
-                     rel_x = mouse_pos[0] - graph_rect.x
-                     hover_idx = int((rel_x / graph_rect.width) * len(history_subset))
-                     hover_idx = max(0, min(len(history_subset)-1, hover_idx))
-                     
-                     if hover_idx < len(points):
-                        hx, hy = points[hover_idx]
-                        val = history_subset[hover_idx]
+                if len(data_source) > 2:
+                    history_subset = data_source[-100:]
+                    if not history_subset: history_subset = [0]
+                    
+                    current_max = max(history_subset)
+                    current_min = min(history_subset)
+                    
+                    # Update Smoothed View Bounds for Stability
+                    if model.graph_view_max is None:
+                         model.graph_view_max = current_max
+                         model.graph_view_min = current_min
+                    else:
+                         # Slow decay/adapt (5%) to prevent sea-sawing
+                         model.graph_view_max = model.graph_view_max * 0.95 + current_max * 0.05
+                         model.graph_view_min = model.graph_view_min * 0.95 + current_min * 0.05
+                    
+                    l_range = max(1e-6, model.graph_view_max - model.graph_view_min)
+                    base_min = model.graph_view_min
+                    
+                    points = []
+                    for i, val in enumerate(history_subset):
+                        px = graph_rect.x + (i / max(1, len(history_subset)-1)) * graph_rect.width
                         
-                        # Draw Marker
-                        pygame.draw.circle(screen, WHITE, (int(hx), int(hy)), 4)
-                        pygame.draw.line(screen, (100, 100, 100), (int(hx), graph_rect.top), (int(hx), graph_rect.bottom), 1)
+                        # Calculate Y based on smoothed bounds
+                        norm_y = (val - base_min) / l_range
+                        py = graph_rect.bottom - (norm_y * graph_rect.height)
+                        points.append((px, py))
+                    
+                    # Clip drawing to graph area
+                    old_clip = screen.get_clip()
+                    screen.set_clip(graph_rect)
+                    
+                    line_color = GREEN if model.graph_mode == 1 else (200, 100, 50)
+                    if len(points) > 1:
+                        pygame.draw.lines(screen, line_color, False, points, 2)
                         
-                        # Draw Tooltip
-                        tip_text = f"L: {val:.4f}"
-                        ts = small_font.render(tip_text, True, WHITE)
-                        tip_rect = ts.get_rect(bottomleft=(int(hx), int(hy) - 10))
+                    screen.set_clip(old_clip)
+
+                    # Interactive Tooltip
+                    if graph_rect.collidepoint(mouse_pos):
+                        rel_x = mouse_pos[0] - graph_rect.x
+                        hover_idx = int((rel_x / graph_rect.width) * len(history_subset))
+                        hover_idx = max(0, min(len(history_subset)-1, hover_idx))
                         
-                        # Clamp tooltip
-                        if tip_rect.right > width - 10: tip_rect.right = width - 10
-                        if tip_rect.left < 10: tip_rect.left = 10
-                        
-                        pygame.draw.rect(screen, (40, 40, 40), tip_rect.inflate(8, 4))
-                        pygame.draw.rect(screen, WHITE, tip_rect.inflate(8, 4), 1)
-                        screen.blit(ts, tip_rect)
+                        if hover_idx < len(points):
+                            hx, hy = points[hover_idx]
+                            val = history_subset[hover_idx]
+                            
+                            # Clamp marker Y to rect
+                            hy = max(graph_rect.top, min(graph_rect.bottom, hy))
+                            
+                            # Draw Marker
+                            pygame.draw.circle(screen, WHITE, (int(hx), int(hy)), 4)
+                            pygame.draw.line(screen, (100, 100, 100), (int(hx), graph_rect.top), (int(hx), graph_rect.bottom), 1)
+                            
+                            # Draw Tooltip
+                            tip_text = f"L: {val:.4f}"
+                            ts = small_font.render(tip_text, True, WHITE)
+                            tip_rect = ts.get_rect(bottomleft=(int(hx), int(hy) - 10))
+                            
+                            # Clamp tooltip
+                            if tip_rect.right > width - 10: tip_rect.right = width - 10
+                            if tip_rect.left < 10: tip_rect.left = 10
+                            
+                            pygame.draw.rect(screen, (40, 40, 40), tip_rect.inflate(8, 4))
+                            pygame.draw.rect(screen, WHITE, tip_rect.inflate(8, 4), 1)
+                            screen.blit(ts, tip_rect)
+                else:
+                    # No Data Message
+                    nd_text = small_font.render("Waiting for data...", True, GRAY)
+                    nd_rect = nd_text.get_rect(center=graph_rect.center)
+                    screen.blit(nd_text, nd_rect)
 
             # Update Window Title based on state
         if model.is_training:

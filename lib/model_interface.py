@@ -42,6 +42,9 @@ class ModelInterface:
                             # Backfill raw with smooth if missing (for old checkpoints)
                             self.raw_loss_history = list(self.loss_history)
                         
+                        if 'lr_history' in checkpoint: self.lr_history = checkpoint['lr_history']
+                        if 'grad_norm_history' in checkpoint: self.grad_norm_history = checkpoint['grad_norm_history']
+                        
                         print("Checkpoint loaded successfully.")
                         self.status_message = "Loaded previous training progress."
                     except RuntimeError as e:
@@ -96,8 +99,14 @@ class ModelInterface:
         self.elite_path = os.path.join(self.checkpoints_dir, 'greg_brain_elite.pth')
         self.history = [] # List of (epoch, loss, state_dict)
         
+        # Graph View State (for UI smoothing)
+        self.graph_view_min = None
+        self.graph_view_max = None
+        
         self.loss_history = [] # For graphing (EMA)
         self.raw_loss_history = [] # For graphing (Raw)
+        self.lr_history = [] # Learning Rate history
+        self.grad_norm_history = [] # Gradient Norm history
         self.loss_ema = None # Exponential Moving Average for smoothing
         self.show_loss_graph = False
         self.graph_mode = 0 # 0=Off, 1=Smooth, 2=Raw
@@ -150,7 +159,9 @@ class ModelInterface:
                 'model_state_dict': self.brain.state_dict(),
                 'difficulty': self.difficulty_scores,
                 'loss_history': self.loss_history,
-                'raw_loss_history': self.raw_loss_history
+                'raw_loss_history': self.raw_loss_history,
+                'lr_history': self.lr_history,
+                'grad_norm_history': self.grad_norm_history
             }, target)
             print("Checkpoint saved.")
         except Exception as e:
@@ -188,7 +199,8 @@ class ModelInterface:
                 for t in range(BrainConfig.SCOUT_WINDOW_SIZE, seq_len):
                     window = inputs[:, t - BrainConfig.SCOUT_WINDOW_SIZE : t]
                     r_win = window.unsqueeze(1).expand(-1, BrainConfig.SCOUT_COUNT, -1)
-                    w_win = window.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
+                    w_slice = window[:, -BrainConfig.CURSOR_WINDOW_SIZE:]
+                    w_win = w_slice.unsqueeze(1).expand(-1, BrainConfig.CURSOR_COUNT, -1)
                     actions, state = self.brain(r_win, w_win, state)
                     logits = actions['cursor_chars'][:, 0, :]
                     loss_seq += criterion(logits, targets[:, t])
@@ -262,7 +274,7 @@ class ModelInterface:
     def export_diagnostics(self):
         return self.diag_manager.save_snapshot()
 
-    def start_training(self, epochs=2, persistent_memory=True, batch_size=16, seq_len=50, elitism_epochs=25, target_loss=1e-5, time_minutes=None):
+    def start_training(self, epochs=2, persistent_memory=True, batch_size=16, seq_len=50, elitism_epochs=25, target_loss=1e-5, time_minutes=None, initial_lr=None, smoothing_factor=0.9):
         if self.is_training:
             return
         
@@ -345,11 +357,15 @@ class ModelInterface:
                      self.is_training = False
                      return
                 
-                optimizer = torch.optim.AdamW(self.brain.parameters(), lr=BrainConfig.LEARNING_RATE, weight_decay=BrainConfig.WEIGHT_DECAY)
+                start_lr = initial_lr if initial_lr is not None else BrainConfig.LEARNING_RATE
+                optimizer = torch.optim.AdamW(self.brain.parameters(), lr=start_lr, weight_decay=BrainConfig.WEIGHT_DECAY)
                 # Scheduler to handle plateaus
                 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
                 criterion = torch.nn.CrossEntropyLoss()
                 
+                # Tracking for LR adjustment logic
+                epoch_avg_losses = [] # Stores average loss per epoch
+
                 # Persistent state
                 persistent_state = None
                 self.stop_requested = False
@@ -389,7 +405,16 @@ class ModelInterface:
                     
                     if len(epoch_data) < actual_seq_len + 10:
                         continue
-                        
+                    
+                    # Strict check for Persistent Memory mode (TBPTT)
+                    if persistent_memory:
+                         # For TBPTT with batch_size, we split data into 'batch_size' chunks
+                         # Each chunk must be at least 'actual_seq_len + 1' long
+                         min_required_tokens = batch_size * (actual_seq_len + 1)
+                         if len(epoch_data) < min_required_tokens:
+                             # print(f"Skipping {selected_file}: too short ({len(epoch_data)} < {min_required_tokens})")
+                             continue
+
                     self.diag['selected_file'] = os.path.basename(selected_file)
                     self.diag['epoch'] = epoch + 1
                     self.diag['epochs'] = epochs
@@ -484,12 +509,21 @@ class ModelInterface:
                             if self.loss_ema is None:
                                 self.loss_ema = current_loss_val
                             else:
-                                self.loss_ema = 0.9 * self.loss_ema + 0.1 * current_loss_val
+                                self.loss_ema = smoothing_factor * self.loss_ema + (1.0 - smoothing_factor) * current_loss_val
                             
                             # Track loss for graphing
                             if step % 10 == 0:
                                 self.loss_history.append(self.loss_ema)
-                                if len(self.loss_history) > 1000: self.loss_history.pop(0)
+                                self.raw_loss_history.append(current_loss_val)
+                                self.lr_history.append(optimizer.param_groups[0]['lr'])
+                                self.grad_norm_history.append(grad_norm.item())
+                                
+                                if len(self.loss_history) > 1000: 
+                                    self.loss_history.pop(0)
+                                    self.raw_loss_history.pop(0)
+                                    self.lr_history.pop(0)
+                                    self.grad_norm_history.pop(0)
+                                    
                                 self.status_message = f"Ep {epoch+1} | Loss: {self.loss_ema:.4f}"
                                 self._save_loss_history()
                             
@@ -506,6 +540,38 @@ class ModelInterface:
                         if avg_epoch_loss < 2.0:
                             self.difficulty_scores[selected_file] = max(0.1, self.difficulty_scores[selected_file] - 0.5)
                         
+                        # --- Custom LR Adjustment Logic ---
+                        # "make the lerning rate increase or decrease by 1% every 10 epochs, 
+                        # if the average loss is lower than the previous average 10 epochs ago, its kept"
+                        epoch_avg_losses.append(avg_epoch_loss)
+                        
+                        if (epoch + 1) % 10 == 0 and len(epoch_avg_losses) >= 20:
+                            # Average of last 10 epochs (Current window)
+                            curr_window_avg = sum(epoch_avg_losses[-10:]) / 10.0
+                            # Average of previous 10 epochs (Reference window)
+                            prev_window_avg = sum(epoch_avg_losses[-20:-10]) / 10.0
+                            
+                            current_lr = optimizer.param_groups[0]['lr']
+                            
+                            if curr_window_avg < prev_window_avg:
+                                # Improvement detected: "It is kept" (or reward momentum?)
+                                # Heuristic: If improving, slightly increase to accelerate?
+                                # Or if improved, it means the previous LR was good. 
+                                # Let's assume user wants to push limits if things are going well.
+                                # But "kept" implies stability.
+                                # Let's stick to standard "Adaptive" logic:
+                                # If improving, we can afford to be slightly aggressive or just maintain.
+                                # But if we interpret "increase or decrease by 1%", let's try increasing.
+                                new_lr = current_lr * 1.01
+                                print(f"LR Adjustment (Improvement {curr_window_avg:.4f} < {prev_window_avg:.4f}): Increasing LR by 1% -> {new_lr:.2e}")
+                            else:
+                                # Worsened or Stagnated: Decrease to stabilize
+                                new_lr = current_lr * 0.99
+                                print(f"LR Adjustment (No Improvement {curr_window_avg:.4f} >= {prev_window_avg:.4f}): Decreasing LR by 1% -> {new_lr:.2e}")
+                            
+                            for param_group in optimizer.param_groups:
+                                param_group['lr'] = new_lr
+
                         scheduler.step(avg_epoch_loss)
                         self.diag['last_loss'] = avg_epoch_loss
                         self.save_difficulty()
@@ -583,14 +649,19 @@ class ModelInterface:
                             if self.loss_ema is None:
                                 self.loss_ema = current_loss_val
                             else:
-                                self.loss_ema = 0.9 * self.loss_ema + 0.1 * current_loss_val
+                                self.loss_ema = smoothing_factor * self.loss_ema + (1.0 - smoothing_factor) * current_loss_val
                             
                             if i % 10 == 0:
                                 self.loss_history.append(self.loss_ema)
                                 self.raw_loss_history.append(current_loss_val)
+                                self.lr_history.append(optimizer.param_groups[0]['lr'])
+                                self.grad_norm_history.append(grad_norm.item())
+                                
                                 if len(self.loss_history) > 1000: 
                                     self.loss_history.pop(0)
                                     self.raw_loss_history.pop(0)
+                                    self.lr_history.pop(0)
+                                    self.grad_norm_history.pop(0)
                                 self.status_message = f"Ep {epoch+1} | Loss: {self.loss_ema:.4f}"
                                 self._save_loss_history()
                             
@@ -1005,7 +1076,10 @@ class ModelInterface:
             os.makedirs(os.path.dirname(self.loss_log_path), exist_ok=True)
             payload = {
                 "timestamp": int(time.time()),
-                "ema_loss_history": self.loss_history[-500:]
+                "ema_loss_history": self.loss_history[-500:],
+                "raw_loss_history": self.raw_loss_history[-500:],
+                "lr_history": self.lr_history[-500:],
+                "grad_norm_history": self.grad_norm_history[-500:]
             }
             with open(self.loss_log_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f)
